@@ -50,7 +50,7 @@ private:
     ros::Publisher pubSurfPointsFlat;
     ros::Publisher pubSurfPointsLessFlat;
 
-    pcl::PointCloud<PointType>::Ptr segmentedCloud;                 // pointcloud_handle()把点云拷贝到这里
+    pcl::PointCloud<PointType>::Ptr segmentedCloud;                 // 这里的点都转换到当前帧第1个激光点对应的时刻的坐标系了
     pcl::PointCloud<PointType>::Ptr outlierCloud;
 
     pcl::PointCloud<PointType>::Ptr cornerPointsSharp;
@@ -87,7 +87,7 @@ private:
     int imuPointerLast;
     int imuPointerLastIteration;
 
-    // 该帧扫描初始的imu数据
+    // 该帧扫描初始(第0个点的)的imu数据(载体坐标系b系以及对应的导航坐标系n系)
     float imuRollStart, imuPitchStart, imuYawStart;
     float cosImuRollStart, cosImuPitchStart, cosImuYawStart, sinImuRollStart, sinImuPitchStart, sinImuYawStart;
 
@@ -164,10 +164,24 @@ private:
     float pointSearchSurfInd2[N_SCAN*Horizon_SCAN];
     float pointSearchSurfInd3[N_SCAN*Horizon_SCAN];
 
-    float transformCur[6];
+    /// 相机坐标系（c系）及其对应的导航坐标系n'  |   载体坐标系(b系)及其对应的导航坐标系n
+    ///                                    |
+    ///           y    z（前进方向）         |              z    x（前进方向）
+    //            ^    ^                   |              ^    ^
+    //            |   /                    |              |   /
+    //            |  /                     |              |  /
+    //            | /                      |              | /
+    //            |/                       |              |/
+    //  x<--------.                        |    y<--------.
+    //
+    // transformCur[0]: (相机坐标系c系)绕x轴的旋转量 (也就是imu读数的pitch(载体坐标系b系)绕y轴的旋转量)
+    // transformCur[1]: (相机坐标系c系)绕y轴的旋转量 (也就是imu读数的yaw(载体坐标系b系)绕z轴的旋转量)
+    // transformCur[2]: (相机坐标系c系)绕z轴的旋转量 (也就是imu读数的roll(载体坐标系b系)绕x轴的旋转量)
+
+    float transformCur[6];      // 位姿估计 (相对于前一帧的)
     float transformSum[6];
 
-    float imuRollLast, imuPitchLast, imuYawLast;
+    float imuRollLast, imuPitchLast, imuYawLast;    //当前帧最后一个点的时刻对应的imu的值
     float imuShiftFromStartX, imuShiftFromStartY, imuShiftFromStartZ;
     float imuVeloFromStartX, imuVeloFromStartY, imuVeloFromStartZ;
 
@@ -449,6 +463,8 @@ public:
         //c_to_b << 0 , 0, 1,
         //         1 ,0 ,0 ,
         //        0 ,1 ,0;
+        //// yaw_R*pitch_R*roll_R: 是从载体坐标系b系到对应导航坐标系n系的变换,即C_b^n
+        //// 所以 n系到b系的变换 C_n^b = [yaw_R*pitch_R*roll_R]^T = [roll_R]^T * [pitch_R]^T * [yaw_R]^T
 
         //Eigen::Vector3d P(p->x,p->y,p->z);
         //P=c_to_b.transpose()*yaw_R*pitch_R*roll_R*c_to_b*P;
@@ -503,7 +519,7 @@ public:
 
         //Eigen::Vector3d P(x3,y3,z3);
         //// 这里与上面debug稍有不同，只是取了反，因为是从 导航系n' 到 i=0的相机坐标系
-        //P=(c_to_b.transpose()*yaw_R*pitch_R*roll_R*c_to_b).transpose()*P;
+        //P=(c_to_b.transpose()*yaw_R*pitch_R*roll_R*c_to_b).transpose()*P+Eigen::Vector3d(imuShiftFromStartXCur,imuShiftFromStartYCur,imuShiftFromStartZCur);
 
         //// 下面证明了上述操作与原作者代码是等价的
         //std::cout<<"Offical "<<p->x<<" "<<p->y<<" "<<p->z<<std::endl;
@@ -526,11 +542,6 @@ public:
         Eigen::Vector3d acc;
         acc<<accX,accY,accZ;
         ///////////////////////
-
-        // 三个欧拉角对应原数据三个轴的角度
-        // roll ---> x轴
-        // pitch---> y轴
-        // yaw  ---> z轴
 
         /// imuHandler()之后，加速度所采用的导航坐标系
         /// 相机坐标系(c系)及其对应的导航坐标系
@@ -560,30 +571,30 @@ public:
 
         //////////////////////////////////////////////////////////////
         /// qpc: add for debug
-        Eigen::Matrix3d yaw_R;
-        yaw_R<< cos(yaw),-sin(yaw),0,
-                sin(yaw),cos(yaw),0,
-                0 , 0, 1;
-        Eigen::Matrix3d pitch_R;
-        pitch_R<< cos(pitch),0,sin(pitch),
-                  0 , 1 , 0,
-                  -sin(pitch),0,cos(pitch);
-        Eigen::Matrix3d roll_R;
-        roll_R<<1, 0 , 0,
-                0,cos(roll),-sin(roll),
-                0,sin(roll),cos(roll);
-        // c_to_b: 从相机坐标系c系 到 载体坐标系b系的旋转变换
-        Eigen::Matrix3d c_to_b ;
-        c_to_b << 0 , 0, 1,
-                 1 ,0 ,0 ,
-                0 ,1 ,0;
+        //Eigen::Matrix3d yaw_R;
+        //yaw_R<< cos(yaw),-sin(yaw),0,
+        //        sin(yaw),cos(yaw),0,
+        //        0 , 0, 1;
+        //Eigen::Matrix3d pitch_R;
+        //pitch_R<< cos(pitch),0,sin(pitch),
+        //          0 , 1 , 0,
+        //          -sin(pitch),0,cos(pitch);
+        //Eigen::Matrix3d roll_R;
+        //roll_R<<1, 0 , 0,
+        //        0,cos(roll),-sin(roll),
+        //        0,sin(roll),cos(roll);
+        //// c_to_b: 从相机坐标系c系 到 载体坐标系b系的旋转变换
+        //Eigen::Matrix3d c_to_b ;
+        //c_to_b << 0 , 0, 1,
+        //         1 ,0 ,0 ,
+        //        0 ,1 ,0;
 
-        // acc: 相机坐标系c系的比力
-        // c_to_b: 从相机坐标系c系 到 载体坐标系b系的 变换
-        // yaw_R*pitch_R*roll_R: 载体坐标系b系 到 导航坐标系n系 的变换
-        // c_to_b.transpose(): 导航坐标系n系(b系的) 到 导航坐标系n'(c系的) 坐标系的变换
-        // 最终，得到 相机坐标系c系的比力 转换到 对应的导航坐标系n'的加速度
-        acc=c_to_b.transpose()*yaw_R*pitch_R*roll_R*c_to_b*acc;
+        //// acc: 相机坐标系c系的比力
+        //// c_to_b: 从相机坐标系c系 到 载体坐标系b系的 变换
+        //// yaw_R*pitch_R*roll_R: 载体坐标系b系 到 导航坐标系n系 的变换
+        //// c_to_b.transpose(): 导航坐标系n系(b系的) 到 导航坐标系n'(c系的) 坐标系的变换
+        //// 最终，得到 相机坐标系c系的比力 转换到 对应的导航坐标系n'的加速度
+        //acc=c_to_b.transpose()*yaw_R*pitch_R*roll_R*c_to_b*acc;
 
         // 下面证明了上述操作与原作者代码是等价的
         //std::cout<<"Offical "<<accX<<" "<<accY<<" "<<accZ<<std::endl;
@@ -850,6 +861,7 @@ public:
                 if (i == 0) {
                     // 此处更新过的角度值主要用在updateImuRollPitchYawStartSinCos()中,
                     // 更新每个角的正余弦值
+
                     imuRollStart = imuRollCur;
                     imuPitchStart = imuPitchCur;
                     imuYawStart = imuYawCur;
@@ -894,7 +906,7 @@ public:
                     // 如果不是第0个点，那么将该激光点转换到该帧扫描起始时刻
                     // 速度投影到初始i=0时刻
                     VeloToStartIMU();
-					// 将点的坐标变换到初始i=0时刻
+                    // 将点的坐标变换到当前帧初始i=0时刻
                     TransformToStartIMU(&point);
                 }
             }
@@ -1083,7 +1095,7 @@ public:
                         surfPointsFlat->push_back(segmentedCloud->points[ind]);
 
                         // 论文中nFp=4，将4个最平的平面点放入队列中
-                        // 取4个粗糙度最小的点，保存到surfPointsFlat[]
+                        // 360分6等份，每个等份取4个粗糙度最小的点，保存到surfPointsFlat[]
                         smallestPickedNum++;
                         if (smallestPickedNum >= 4) {
                             break;
@@ -1205,28 +1217,43 @@ public:
 
 
 
-
+    // 目标：把当前帧扫描起始时刻的相机导航坐标系n'的点 根据位姿 投影到 前一帧扫描起始时刻的相机导航坐标系n'
     void TransformToStart(PointType const * const pi, PointType * const po)
     {
-        // intensity代表的是：整数部分ring序号，小数部分是当前点在这一圈中所花的时间
-        // 关于intensity， 参考 adjustDistortion() 函数中的定义
-        // s代表的其实是一个比例，s的计算方法应该如下：
-        // s=(pi->intensity - int(pi->intensity))/SCAN_PERIOD
-        // ===> SCAN_PERIOD=0.1(雷达频率为10hz)
-        // 以上理解感谢github用户StefanGlaser
+
         // https://github.com/laboshinl/loam_velodyne/issues/29
+        // imageProjection: thisPoint.intensity = (float)rowIdn + (float)columnIdn / 10000.0;
+        // s是个补偿因子，当激光雷达从起始点开始扫，那么此时的列号逐渐增加
+        // 激光雷达点的畸变也会增加，列号越大，这个因子也越大
         float s = 10 * (pi->intensity - int(pi->intensity));
 
-        float rx = s * transformCur[0];
-        float ry = s * transformCur[1];
-        float rz = s * transformCur[2];
+        float rx = s * transformCur[0];         // 绕x轴(相机坐标系c系)的旋转量 (也就是imu读数的pitch(载体坐标系b系))
+        float ry = s * transformCur[1];         // 绕y轴(相机坐标系c系)的旋转量 (也就是imu读数的yaw(载体坐标系b系))
+        float rz = s * transformCur[2];         // 绕z轴(相机坐标系c系)的旋转量 (也就是imu读数的roll(载体坐标系b系))
         float tx = s * transformCur[3];
         float ty = s * transformCur[4];
         float tz = s * transformCur[5];
 
+        // 这里的旋转变换操作顺序是跟AccumulateIMUShiftAndRotation()一致的
+        // pi: 转换到当前帧扫描起始时刻的相机导航坐标系n'的点
+        // po: 转换到前一帧扫描起始时刻的相机导航坐标系n'的点
+        // transformCur： 以当前帧扫描坐标系为基准 前一帧扫描的位姿
+
+        // 举例子:导航坐标系n系 转换到 载体坐标系b系的旋转 C_n^b=Rx*Ry*Rz
+        //       载体坐标系b系 转换到 导航坐标系n系的旋转 C_b^n=[C_n^b]^T=[Rx*Ry*Rz]^T
+
+        // 而这里，需要把 当前帧扫描(pi)坐标系 作为 上述‘导航坐标系n系’，而前一帧扫描(po)，则相当于‘载体坐标系b系’
+        // 因此，有 pi=R*po+t，这里的R，正是 R=C_b^n=[C_n^b]^T=[Rx*Ry*Rz]^T
+        // 所以：              pi = C_b^n*po+t
+        //            R^{T}(pi-t)=po
+        //            C_n^b(pi-t)=po
+        //       [Rx*Ry*Rz](pi-t)=po
+
+        // 为什么这里包含平移量，下面没有?
         float x1 = cos(rz) * (pi->x - tx) + sin(rz) * (pi->y - ty);
         float y1 = -sin(rz) * (pi->x - tx) + cos(rz) * (pi->y - ty);
         float z1 = (pi->z - tz);
+
 
         float x2 = x1;
         float y2 = cos(rx) * y1 + sin(rx) * z1;
@@ -1236,9 +1263,41 @@ public:
         po->y = y2;
         po->z = sin(ry) * x2 + cos(ry) * z2;
         po->intensity = pi->intensity;
+
+
+        //////////////////////////////////////////////////////////////
+        /// qpc: add for debug
+        //Eigen::Matrix3d yaw_R;
+        //yaw_R<< cos(ry),-sin(ry),0,
+        //        sin(ry),cos(ry),0,
+        //        0 , 0, 1;
+        //Eigen::Matrix3d pitch_R;
+        //pitch_R<< cos(rx),0,sin(rx),
+        //          0 , 1 , 0,
+        //         -sin(rx),0,cos(rx);
+        //Eigen::Matrix3d roll_R;
+        //roll_R<<1, 0 , 0,
+        //        0,cos(rz),-sin(rz),
+        //        0,sin(rz),cos(rz);
+        //// c_to_b: 从相机坐标系c系 到 载体坐标系b系的旋转变换
+        //Eigen::Matrix3d c_to_b ;
+        //c_to_b << 0 , 0, 1,
+        //         1 ,0 ,0 ,
+        //        0 ,1 ,0;
+        //// yaw_R*pitch_R*roll_R: 是从载体坐标系b系到对应导航坐标系n系的变换,即C_b^n
+        //// 所以 n系到b系的变换 C_n^b = [yaw_R*pitch_R*roll_R]^T = [roll_R]^T * [pitch_R]^T * [yaw_R]^T
+
+        //Eigen::Vector3d P(pi->x,pi->y,pi->z);
+        //Eigen::Vector3d t(tx,ty,tz);
+        //P=c_to_b.transpose()*(yaw_R*pitch_R*roll_R).transpose()*c_to_b*(P-t);
+
+        //// 下面证明了上述操作与原作者代码是等价的
+        //std::cout<<"Offical "<<po->x<<" "<<po->y<<" "<<po->z<<std::endl;
+        //std::cout<<"my cal "<<P.transpose()<<std::endl;
+        //////////////////////////////////////////////////////////////
     }
 
-    // 先转到start，再从start旋转到end
+
     void TransformToEnd(PointType const * const pi, PointType * const po)
     {
         // 关于s, 参看上面  TransformToStart() 的注释
@@ -1263,6 +1322,7 @@ public:
         float y3 = y2;
         float z3 = sin(ry) * x2 + cos(ry) * z2;
 
+
         rx = transformCur[0];
         ry = transformCur[1];
         rz = transformCur[2];
@@ -1282,6 +1342,16 @@ public:
         float y6 = sin(rz) * x5 + cos(rz) * y5 + ty;
         float z6 = z5 + tz;
 
+        //std::cout<<"Pi "<<pi->x<<" "<<pi->y<<" "<<pi->z<<std::endl;
+        //std::cout<<"transform"<<x6<<" "<<y6<<" "<<z6<<std::endl;
+        // 上面先把点投影到 前一帧扫描起始时刻的相机导航坐标系n'
+        // 接下来又投回去，实际上，上述代码啥也没干
+        ///////////////////////////////////////////////////////////
+
+        // 所以[x6,y6,z6] == [pi.x, pi.y, pi.z]
+
+        // 把点从 当前帧扫描起始相机坐标系c系 转换回 当前帧扫描起始相机坐标系c系对应的导航坐标系n'
+
         float x7 = cosImuRollStart * (x6 - imuShiftFromStartX) 
                  - sinImuRollStart * (y6 - imuShiftFromStartY);
         float y7 = sinImuRollStart * (x6 - imuShiftFromStartX) 
@@ -1295,6 +1365,8 @@ public:
         float x9 = cosImuYawStart * x8 + sinImuYawStart * z8;
         float y9 = y8;
         float z9 = -sinImuYawStart * x8 + cosImuYawStart * z8;
+
+        // 把点从 当前帧扫描起始相机坐标系c系对应的导航坐标系n' 转换回 当前帧扫描结束时相机坐标系c系对应的导航坐标系n'
 
         float x10 = cos(imuYawLast) * x9 - sin(imuYawLast) * z9;
         float y10 = y9;
@@ -1536,23 +1608,28 @@ public:
     void findCorrespondingSurfFeatures(int iterCount){
 
         int surfPointsFlatNum = surfPointsFlat->points.size();
-
+        //std::cout<<surfPointsFlatNum<<std::endl;
+        // 遍历地面的曲率最小点集
         for (int i = 0; i < surfPointsFlatNum; i++) {
             // 坐标变换到开始时刻，参数0是输入，参数1是输出
+            // 将点根据预测的位姿，变换到 前一帧起始坐标系对应的导航坐标系
             TransformToStart(&surfPointsFlat->points[i], &pointSel);
 
+            // 迭代次数是5的倍数的话
             if (iterCount % 5 == 0) {
 
                 // k点最近邻搜索，这里k=1
+                // 在 前一帧的平面特征中，找到与当前点的投影点最邻近的点
                 kdtreeSurfLast->nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
                 int closestPointInd = -1, minPointInd2 = -1, minPointInd3 = -1;
 
                 // sq:平方，距离的平方值
-                // 如果nearestKSearch找到的1(k=1)个邻近点满足条件
+                // 如果nearestKSearch找到的1(k=1)个邻近点的距离<阈值
                 if (pointSearchSqDis[0] < nearestFeatureSearchSqDist) {
+                    /// 找到第一个点
+                    // 取最邻近点的索引(在kdtreeSurfLast中的索引)
                     closestPointInd = pointSearchInd[0];
 					
-                    // point.intensity 保存的是什么值? 第几次scan?
                     // thisPoint.intensity = (float)rowIdn + (float)columnIdn / 10000.0;
                     // fullInfoCloud->points[index].intensity = range;
                     // 在imageProjection.cpp文件中有上述两行代码，两种类型的值，应该存的是上面一个
@@ -1561,14 +1638,16 @@ public:
                     // 主要功能是找到2个scan之内的最近点，并将找到的最近点及其序号保存
                     // 之前扫描的保存到minPointSqDis2，之后的保存到minPointSqDis2
                     float pointSqDis, minPointSqDis2 = nearestFeatureSearchSqDist, minPointSqDis3 = nearestFeatureSearchSqDist;
+
+                    /// laserCloudSurfLast: 上一帧的平面点
+                    // 在上面的最邻近点对应索引附近继续找(在上一帧的平面点里面找)
                     for (int j = closestPointInd + 1; j < surfPointsFlatNum; j++) {
 
-                        // int类型的值加上2.5? 为什么不直接加上2?
-                        // 四舍五入
+                        // 这应该说的是，两个点的线束id不能差太远
                         if (int(laserCloudSurfLast->points[j].intensity) > closestPointScan + 2.5) {
                             break;
                         }
-
+                        // 计算两点之间的距离
                         pointSqDis = (laserCloudSurfLast->points[j].x - pointSel.x) * 
                                      (laserCloudSurfLast->points[j].x - pointSel.x) + 
                                      (laserCloudSurfLast->points[j].y - pointSel.y) * 
@@ -1576,6 +1655,7 @@ public:
                                      (laserCloudSurfLast->points[j].z - pointSel.z) * 
                                      (laserCloudSurfLast->points[j].z - pointSel.z);
 
+                        // 储存第2近和第3近的两个点
                         if (int(laserCloudSurfLast->points[j].intensity) <= closestPointScan) {
                             if (pointSqDis < minPointSqDis2) {
                               minPointSqDis2 = pointSqDis;
@@ -1616,21 +1696,27 @@ public:
                     }
                 }
 
+                // 这里找到3个点
                 pointSearchSurfInd1[i] = closestPointInd;
                 pointSearchSurfInd2[i] = minPointInd2;
                 pointSearchSurfInd3[i] = minPointInd3;
             }
 
             // 前后都能找到对应的最近点在给定范围之内
-            // 那么就开始计算距离
+            // 那么就开始计算特征距离
             // [pa,pb,pc]是tripod1，tripod2，tripod3这3个点构成的一个平面的方向量，
             // ps是模长，它是三角形面积的2倍
             if (pointSearchSurfInd2[i] >= 0 && pointSearchSurfInd3[i] >= 0) {
 
-                tripod1 = laserCloudSurfLast->points[pointSearchSurfInd1[i]];
-                tripod2 = laserCloudSurfLast->points[pointSearchSurfInd2[i]];
-                tripod3 = laserCloudSurfLast->points[pointSearchSurfInd3[i]];
+                // 分别取这3个点(在前一帧的平面点取)
+                tripod1 = laserCloudSurfLast->points[pointSearchSurfInd1[i]];       //A
+                tripod2 = laserCloudSurfLast->points[pointSearchSurfInd2[i]];       //B
+                tripod3 = laserCloudSurfLast->points[pointSearchSurfInd3[i]];       //C
 
+                // https://blog.csdn.net/PengPengBlog/article/details/52774421
+                // 已知3点，求平面方程 ax+by+cz+d=0
+                // 以点1为O点， AB=(tripod2-tripod1) AC=(tripod3 - tripod1)
+                // 那么构成的平面的法向量(a,b,c)可由叉乘获得 AB X AC
                 float pa = (tripod2.y - tripod1.y) * (tripod3.z - tripod1.z) 
                          - (tripod3.y - tripod1.y) * (tripod2.z - tripod1.z);
                 float pb = (tripod2.z - tripod1.z) * (tripod3.x - tripod1.x) 
@@ -1639,6 +1725,7 @@ public:
                          - (tripod3.x - tripod1.x) * (tripod2.y - tripod1.y);
                 float pd = -(pa * tripod1.x + pb * tripod1.y + pc * tripod1.z);
 
+                // ps 作用：下面求距离要除以的
                 float ps = sqrt(pa * pa + pb * pb + pc * pc);
 
                 pa /= ps;
@@ -1647,17 +1734,20 @@ public:
                 pd /= ps;
 
                 // 距离没有取绝对值
-                // 两个向量的点乘，分母除以ps中已经除掉了，
-                // 加pd原因:pointSel与tripod1构成的线段需要相减
+                // 点到平面距离： |Ax1+By1+Cz1+D|/sqrt(A^2+B^2+C^2)
                 float pd2 = pa * pointSel.x + pb * pointSel.y + pc * pointSel.z + pd;
 
+                // 如果迭代次数>5，则需计算影响因子s
                 float s = 1;
                 if (iterCount >= 5) {
-                // /加上影响因子
-                    s = 1 - 1.8 * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
-                            + pointSel.y * pointSel.y + pointSel.z * pointSel.z));
+                // 加上影响因子
+                    s = 1 - 1.8 * fabs(pd2) / sqrt(
+                                sqrt(pointSel.x * pointSel.x+
+                                     pointSel.y * pointSel.y+
+                                     pointSel.z * pointSel.z));
                 }
 
+                //
                 if (s > 0.1 && pd2 != 0) {
                     // [x,y,z]是整个平面的单位法量
                     // intensity是平面外一点到该平面的距离
@@ -1675,15 +1765,39 @@ public:
     }
 
     bool calculateTransformationSurf(int iterCount){
-
+        // 加入到残差方程中的点数N
         int pointSelNum = laserCloudOri->points.size();
 
+        // A(Nx3)
         cv::Mat matA(pointSelNum, 3, CV_32F, cv::Scalar::all(0));
+        // A^T(3xN)
         cv::Mat matAt(3, pointSelNum, CV_32F, cv::Scalar::all(0));
+        // A^TA(3x3)
         cv::Mat matAtA(3, 3, CV_32F, cv::Scalar::all(0));
+        // B(Nx1)
         cv::Mat matB(pointSelNum, 1, CV_32F, cv::Scalar::all(0));
+        // A^TB(3x1)
         cv::Mat matAtB(3, 1, CV_32F, cv::Scalar::all(0));
         cv::Mat matX(3, 1, CV_32F, cv::Scalar::all(0));
+
+        /// 相机坐标系（c系）及其对应的导航坐标系n'  |   载体坐标系(b系)及其对应的导航坐标系n
+        ///                                    |
+        ///           y    z（前进方向）         |              z    x（前进方向）
+        //            ^    ^                   |              ^    ^
+        //            |   /                    |              |   /
+        //            |  /                     |              |  /
+        //            | /                      |              | /
+        //            |/                       |              |/
+        //  x<--------.                        |    y<--------.
+        //
+        // transformCur[0]: (相机坐标系c系)绕x轴的旋转量 (也就是imu读数的pitch(载体坐标系b系)绕y轴的旋转量)
+        // transformCur[1]: (相机坐标系c系)绕y轴的旋转量 (也就是imu读数的yaw(载体坐标系b系)绕z轴的旋转量)
+        // transformCur[2]: (相机坐标系c系)绕z轴的旋转量 (也就是imu读数的roll(载体坐标系b系)绕x轴的旋转量)
+
+        // 这里的平面约束，目的是求解
+        // 1. transformCur[0] (相机坐标系c系)x轴转角   (载体坐标系b系)pitch角
+        // 2. transformCur[2] (相机坐标系c系)z轴转角   (载体坐标系b系)roll角
+        // 3. transformCur[4] (相机坐标系c系)y轴偏移   (载体坐标系b系)z轴偏移
 
         float srx = sin(transformCur[0]);
         float crx = cos(transformCur[0]);
@@ -1711,39 +1825,57 @@ public:
             pointOri = laserCloudOri->points[i];
             coeff = coeffSel->points[i];
 
+            // 距离pd2对transformCur[0]求导
+            // 链式求导: pd2对点po求导 * 点po对transformCur[0]求导
+            //  arx   = d(pd2)/d[po.x,po.y,po.z]^T * d[po.x,po.y,po.z]^T/d transformCur[0]
+            //        = [pa,pb,pc] * | d[po.x]/d transformCur[0]  |
+            //                       | d[po.y]/d transformCur[0]  |
+            //                       | d[po.z]/d transformCur[0]  |
+            //
+            // pa=coeff.x  pb=coeff.y pc=coeff.z
             float arx = (-a1*pointOri.x + a2*pointOri.y + a3*pointOri.z + a4) * coeff.x
                       + (a5*pointOri.x - a6*pointOri.y + crx*pointOri.z + a7) * coeff.y
                       + (a8*pointOri.x - a9*pointOri.y - a10*pointOri.z + a11) * coeff.z;
 
+            // 同理，不再详述
+            // 距离pd2对transformCur[2]求导
             float arz = (c1*pointOri.x + c2*pointOri.y + c3) * coeff.x
                       + (c4*pointOri.x - c5*pointOri.y + c6) * coeff.y
                       + (c7*pointOri.x + c8*pointOri.y + c9) * coeff.z;
 
+            // 距离pd2对transformCur[4]求导
             float aty = -b6 * coeff.x + c4 * coeff.y + b2 * coeff.z;
 
             float d2 = coeff.intensity;
 
+            // 雅克比矩阵matA
             matA.at<float>(i, 0) = arx;
             matA.at<float>(i, 1) = arz;
             matA.at<float>(i, 2) = aty;
             matB.at<float>(i, 0) = -0.05 * d2;
         }
 
+        // 构造正规方程 J^T J*dx = -J^T b
         cv::transpose(matA, matAt);
         matAtA = matAt * matA;
         matAtB = matAt * matB;
         cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
 
+        // 如果是第一次求解
         if (iterCount == 0) {
             cv::Mat matE(1, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matV(3, 3, CV_32F, cv::Scalar::all(0));
             cv::Mat matV2(3, 3, CV_32F, cv::Scalar::all(0));
 
+            // 对J^TJ进行分解
+            // matE 特征值(降序)
+            // matV 特征向量
             cv::eigen(matAtA, matE, matV);
             matV.copyTo(matV2);
 
             isDegenerate = false;
             float eignThre[3] = {10, 10, 10};
+            // 检查特征值，如果有特征值<阈值，则设置退化情况标志位，同时对应的特征向量置空
             for (int i = 2; i >= 0; i--) {
                 if (matE.at<float>(0, i) < eignThre[i]) {
                     for (int j = 0; j < 3; j++) {
@@ -1751,27 +1883,33 @@ public:
                     }
                     isDegenerate = true;
                 } else {
+                    // 如果最小特征值都大于阈值，直接break循环
                     break;
                 }
             }
             matP = matV.inv() * matV2;
         }
 
+        // 退化情况的处理
         if (isDegenerate) {
             cv::Mat matX2(3, 1, CV_32F, cv::Scalar::all(0));
             matX.copyTo(matX2);
             matX = matP * matX2;
         }
 
+        // 用dx更新参数
         transformCur[0] += matX.at<float>(0, 0);
         transformCur[2] += matX.at<float>(1, 0);
         transformCur[4] += matX.at<float>(2, 0);
 
+        // 检查状态量是否正常
         for(int i=0; i<6; i++){
             if(isnan(transformCur[i]))
                 transformCur[i]=0;
         }
 
+        // 增量dx已经很小了
+        // 则返回false，表示迭代完成
         float deltaR = sqrt(
                             pow(rad2deg(matX.at<float>(0, 0)), 2) +
                             pow(rad2deg(matX.at<float>(1, 0)), 2));
@@ -1781,6 +1919,7 @@ public:
         if (deltaR < 0.1 && deltaT < 0.1) {
             return false;
         }
+        // true表示继续迭代
         return true;
     }
 
@@ -1895,6 +2034,7 @@ public:
         return true;
     }
 
+    // 六自由度优化，但是没有使用
     bool calculateTransformation(int iterCount){
 
         int pointSelNum = laserCloudOri->points.size();
@@ -2023,10 +2163,11 @@ public:
     }
 
     void checkSystemInitialization(){
-        /// 1. cornerPointsSharp ：粗糙度特别大的两个点
-        /// 2. cornerPointsLessSharp：粗糙度一般大的20个点
-        /// 3. surfPointsFlat： 粗糙度最小的4个点
+        /// 1. cornerPointsSharp ：粗糙度特别大的(每个等份)两个点(16*6*2)
+        /// 2. cornerPointsLessSharp：粗糙度一般大的(每个等份)20个点(16*6*20)
+        /// 3. surfPointsFlat： 粗糙度最小的(每个等份)4个点(16*6*4)
         /// 4. surfPointsLessFlat： 其他点，经过降采样
+        /// 以上点集内的点，都已经转换到 该帧扫描的起始的坐标系对应的导航坐标系
 
         // 交换cornerPointsLessSharp和laserCloudCornerLast
         // 实际上就是为了把刚刚上一步提取到的 边缘点和平面点作为下一次matching用
@@ -2071,22 +2212,31 @@ public:
 
     void updateInitialGuess(){
 
+        // 保存当前imu给出的rpy
+        // 导航坐标系n系的
         imuPitchLast = imuPitchCur;
         imuYawLast = imuYawCur;
         imuRollLast = imuRollCur;
 
+        // 这三个量代码用到,但是值一直为0
         imuShiftFromStartX = imuShiftFromStartXCur;
         imuShiftFromStartY = imuShiftFromStartYCur;
         imuShiftFromStartZ = imuShiftFromStartZCur;
 
+        //std::cout<<imuShiftFromStartX<<" "<<imuShiftFromStartY<<" "<<imuShiftFromStartZ<<std::endl;
+
+        // 相对于当前扫描帧起始点的速度
+        // 下面会用到
         imuVeloFromStartX = imuVeloFromStartXCur;
         imuVeloFromStartY = imuVeloFromStartYCur;
         imuVeloFromStartZ = imuVeloFromStartZCur;
 
+        ///将获取当前帧扫描起始时刻的位姿估计
         // 关于下面负号的说明：
         // transformCur是在Cur坐标系下的 p_start=R*p_cur+t
         // R和t是在Cur坐标系下的
         // 而imuAngularFromStart是在start坐标系下的，所以需要加负号
+        ///简单来说，就是将这些角度变换到当前帧扫描起始时刻，所以是-号
         if (imuAngularFromStartX != 0 || imuAngularFromStartY != 0 || imuAngularFromStartZ != 0){
             transformCur[0] = - imuAngularFromStartY;
             transformCur[1] = - imuAngularFromStartZ;
@@ -2102,10 +2252,10 @@ public:
     }
 
     void updateTransformation(){
-
+        // 检查特征数量
         if (laserCloudCornerLastNum < 10 || laserCloudSurfLastNum < 100)
             return;
-
+        // 迭代次数
         for (int iterCount1 = 0; iterCount1 < 25; iterCount1++) {
             laserCloudOri->clear();
             coeffSel->clear();
@@ -2143,13 +2293,30 @@ public:
     void integrateTransformation(){
         float rx, ry, rz, tx, ty, tz; 
 
+        /// 因为获得的transformCur是 前一帧到当前帧的变换，因此，为了得到里程计的效果
+        /// 需要求逆，然后累加
+
         // AccumulateRotation作用
         // 将计算的两帧之间的位姿“累加”起来，获得相对于第一帧的旋转矩阵
         // transformSum + (-transformCur) =(rx,ry,rz)
+        // transformSum: 前一帧到第0帧相机坐标系导航系n'的变换
+        // transformCur: 前一帧到当前帧的变换
+        // 当前帧到第0帧相机坐标系导航系n'的变换 =  transformSum * transformCur.inv()
         AccumulateRotation(transformSum[0], transformSum[1], transformSum[2], 
                            -transformCur[0], -transformCur[1], -transformCur[2], rx, ry, rz);
 
         // 进行平移分量的更新
+        // transformSum: 前一帧到第0帧相机坐标系导航系n'的变换
+        // transformCur: 前一帧到当前帧的变换
+        // 当前帧到第0帧相机坐标系导航系n'的变换 =  transformSum * transformCur.inv()   ===> rx, ry, rz
+        // 当前帧到第0帧相机坐标系导航系n'的平移变换 , 即 当前帧原点在第0帧相机坐标系导航系n'的坐标
+        // P_{n'}= R_sum*( p_last ) + t_sum
+        // P_{n'}= R_sum*( R_cur^T(p_cur-t_cur) ) + t_sum
+        // P_{n'}= R_sum*( -R_cur^T*t_cur ) + t_sum
+        // P_{n'}= t_sum-R_sum*( R_cur^T*t_cur )        ==============>就是下面的[tx,ty,tz]
+        // 因为： p_cur = R_cur(p_last) + t_cur
+        // 所以： R_cur^T(p_cur-t_cur) = (p_last)
+
         float x1 = cos(rz) * (transformCur[3] - imuShiftFromStartX) 
                  - sin(rz) * (transformCur[4] - imuShiftFromStartY);
         float y1 = sin(rz) * (transformCur[3] - imuShiftFromStartX) 
@@ -2160,13 +2327,17 @@ public:
         float y2 = cos(rx) * y1 - sin(rx) * z1;
         float z2 = sin(rx) * y1 + cos(rx) * z1;
 
+        // 这里的负号其实是从括号里面提出来的，见上面注释
         tx = transformSum[3] - (cos(ry) * x2 + sin(ry) * z2);
         ty = transformSum[4] - y2;
         tz = transformSum[5] - (-sin(ry) * x2 + cos(ry) * z2);
 
         // 与accumulateRotatio联合起来更新transformSum的rotation部分的工作
         // 可视为transformToEnd的下部分的逆过程
-        PluginIMURotation(rx, ry, rz, imuPitchStart, imuYawStart, imuRollStart, 
+        // imuPitchStart,imuYawStart,imuRollStart: 当前帧扫描初始(第0个点的)的imu值
+        // imuPitchLast,imuYawLast,imuRollLast: 当前帧最后一个点的时刻对应的imu的值
+        // ?这干啥了
+        PluginIMURotation(rx, ry, rz, imuPitchStart, imuYawStart, imuRollStart,
                           imuPitchLast, imuYawLast, imuRollLast, rx, ry, rz);
 
         transformSum[0] = rx;
@@ -2178,7 +2349,27 @@ public:
     }
 
     void publishOdometry(){
+
+        /// 相机坐标系（c系）及其对应的导航坐标系n'  |   载体坐标系(b系)及其对应的导航坐标系n
+        ///                                    |
+        ///           y    z（前进方向）         |              z    x（前进方向）
+        //            ^    ^                   |              ^    ^
+        //            |   /                    |              |   /
+        //            |  /                     |              |  /
+        //            | /                      |              | /
+        //            |/                       |              |/
+        //  x<--------.                        |    y<--------.
+        //
+        // transformCur[0]: (相机坐标系c系)绕x轴的旋转量 (也就是imu读数的pitch(载体坐标系b系)绕y轴的旋转量)
+        // transformCur[1]: (相机坐标系c系)绕y轴的旋转量 (也就是imu读数的yaw(载体坐标系b系)绕z轴的旋转量)
+        // transformCur[2]: (相机坐标系c系)绕z轴的旋转量 (也就是imu读数的roll(载体坐标系b系)绕x轴的旋转量)
+        // transformCur[3]: (相机坐标系c系)x轴偏移      (载体坐标系b系)y轴偏移
+        // transformCur[4]: (相机坐标系c系)y轴偏移      (载体坐标系b系)z轴偏移
+        // transformCur[5]: (相机坐标系c系)z轴偏移      (载体坐标系b系)x轴偏移
+        // 发布 基于最开始的一帧相机坐标系c系对应的导航坐标系n'的位姿
         geometry_msgs::Quaternion geoQuat = tf::createQuaternionMsgFromRollPitchYaw(transformSum[2], -transformSum[0], -transformSum[1]);
+
+        // 获取在(载体坐标系b系及其导航坐标系n系)的姿态
 
         // rx,ry,rz转化为四元数发布
         laserOdometry.header.stamp = cloudHeader.stamp;
@@ -2196,6 +2387,34 @@ public:
         laserOdometryTrans.setRotation(tf::Quaternion(-geoQuat.y, -geoQuat.z, geoQuat.x, geoQuat.w));
         laserOdometryTrans.setOrigin(tf::Vector3(transformSum[3], transformSum[4], transformSum[5]));
         tfBroadcaster.sendTransform(laserOdometryTrans);
+
+        //////////////////////////////////////////////////////////////
+        ////// qpc: add for debug
+        ////// 上面的操作，实际上是使用transformSum[]构造基于相机导航坐标系c系的位姿
+        //Eigen::AngleAxisd v_z(transformSum[1] , Eigen::Vector3d(0, 0, 1));      //载体坐标系b系及其导航坐标系n系的 yaw
+        //Eigen::AngleAxisd v_y(transformSum[0] , Eigen::Vector3d(0, 1, 0));      //载体坐标系b系及其导航坐标系n系的 pitch
+        //Eigen::AngleAxisd v_x(transformSum[2] , Eigen::Vector3d(1, 0, 0));      //载体坐标系b系及其导航坐标系n系的 roll
+        //// [v_x.matrix()*v_y.matrix()*v_z.matrix()]: 在载体坐标系b系及其导航坐标系n系的姿态
+        //Eigen::Quaterniond geoQuat_;
+        //geoQuat_=v_x.matrix()*v_y.matrix()*v_z.matrix();
+        //// c_to_b: 从相机坐标系c系 到 载体坐标系b系的旋转变换
+        //Eigen::Matrix3d c_to_b ;
+        //c_to_b << 0 , 0, 1,
+        //         1 ,0 ,0 ,
+        //        0 ,1 ,0;
+        //// 因为transformSum[]是基于相机导航坐标系n'系的，但是里面的rpy在载体坐标系b系及其导航坐标系n系比较明确
+        //// 因此，下面先转换到载体坐标系b系及导航坐标系n系
+        //// 步骤如下:
+        //// 1.假设有一个Identity()姿态在相机导航坐标系n'，先将其转换到(导航坐标系n系)
+        //// 2.根据transformSum[]，构造在导航坐标系n系的位姿，即[v_x.matrix()*v_y.matrix()*v_z.matrix()]
+        //// 3.把在 导航坐标系n系 的位姿转换到 相机导航坐标系n'系
+        //geoQuat_=c_to_b.inverse()*geoQuat_*c_to_b*Eigen::Matrix3d::Identity();
+        //geoQuat_.normalize();
+        //std::cout<<"ROS Quaternion:"<<geoQuat.w<<" "<<-geoQuat.y<<" "<<-geoQuat.z<<" "<<geoQuat.x<<std::endl;
+        //std::cout<<"Eigen Quaternion:"<<geoQuat_.w()<<" "<<geoQuat_.x()<<" "<<geoQuat_.y()<<" "<<geoQuat_.z()<<endl;
+        ////上述证明了操作的结果与原作者的结果一致
+        //////////////////////////////////////////////////////////////
+
     }
 
     void adjustOutlierCloud(){
@@ -2215,18 +2434,21 @@ public:
 
         updateImuRollPitchYawStartSinCos();
 
+        // 粗糙点
         int cornerPointsLessSharpNum = cornerPointsLessSharp->points.size();
         for (int i = 0; i < cornerPointsLessSharpNum; i++) {
-            // TransformToEnd的作用是将k+1时刻的less特征点转移至k+1时刻的sweep的结束位置处的雷达坐标系下
+            // TransformToEnd的作用是将k+1时刻的less特征点转移至k+1时刻的sweep的结束位置处的相机坐标系下
+            // cornerPointsLessSharp: 投影到当前帧扫描起始坐标系(相机坐标系c系)的点
             TransformToEnd(&cornerPointsLessSharp->points[i], &cornerPointsLessSharp->points[i]);
         }
 
-
+        // 平面点
         int surfPointsLessFlatNum = surfPointsLessFlat->points.size();
         for (int i = 0; i < surfPointsLessFlatNum; i++) {
             TransformToEnd(&surfPointsLessFlat->points[i], &surfPointsLessFlat->points[i]);
         }
 
+        // 设置kd-tree
         pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsLessSharp;
         cornerPointsLessSharp = laserCloudCornerLast;
         laserCloudCornerLast = laserCloudTemp;
@@ -2243,13 +2465,15 @@ public:
             kdtreeSurfLast->setInputCloud(laserCloudSurfLast);
         }
 
+        // 是否跳过帧
         frameCount++;
 
         if (frameCount >= skipFrameNum + 1) {
 
             frameCount = 0;
 
-            // 调整坐标系，x=y,y=z,z=x
+            // 发布outlier点云
+            // 调整坐标系，x=y,y=z,z=x,把outlier转换到相机坐标系c系
             adjustOutlierCloud();
             sensor_msgs::PointCloud2 outlierCloudLast2;
             pcl::toROSMsg(*outlierCloud, outlierCloudLast2);
@@ -2257,12 +2481,14 @@ public:
             outlierCloudLast2.header.frame_id = "/camera";
             pubOutlierCloudLast.publish(outlierCloudLast2);
 
+            // 发布粗糙点(当前帧扫描结束时刻的相机坐标系c系)
             sensor_msgs::PointCloud2 laserCloudCornerLast2;
             pcl::toROSMsg(*laserCloudCornerLast, laserCloudCornerLast2);
             laserCloudCornerLast2.header.stamp = cloudHeader.stamp;
             laserCloudCornerLast2.header.frame_id = "/camera";
             pubLaserCloudCornerLast.publish(laserCloudCornerLast2);
 
+            // 发布平面点(当前帧扫描结束时刻的相机坐标系c系)
             sensor_msgs::PointCloud2 laserCloudSurfLast2;
             pcl::toROSMsg(*laserCloudSurfLast, laserCloudSurfLast2);
             laserCloudSurfLast2.header.stamp = cloudHeader.stamp;
@@ -2304,7 +2530,7 @@ public:
         // 发布cornerPointsSharp等4种类型的点云数据
         publishCloud();
 
-        // LM初始化？
+        // 取上面得到的特征，构建kd-tree
         if (!systemInitedLM) {
             checkSystemInitialization();
             return;
