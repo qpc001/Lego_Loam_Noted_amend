@@ -1350,7 +1350,7 @@ public:
 
         // 所以[x6,y6,z6] == [pi.x, pi.y, pi.z]
 
-        // 把点从 当前帧扫描起始相机坐标系c系 转换回 当前帧扫描起始相机坐标系c系对应的导航坐标系n'
+        // 下面把点从 当前帧扫描起始相机坐标系c系 转换回 当前帧扫描起始相机坐标系c系对应的导航坐标系n'
 
         float x7 = cosImuRollStart * (x6 - imuShiftFromStartX) 
                  - sinImuRollStart * (y6 - imuShiftFromStartY);
@@ -1366,7 +1366,38 @@ public:
         float y9 = y8;
         float z9 = -sinImuYawStart * x8 + cosImuYawStart * z8;
 
-        // 把点从 当前帧扫描起始相机坐标系c系对应的导航坐标系n' 转换回 当前帧扫描结束时相机坐标系c系对应的导航坐标系n'
+        //////////////////////////////////////////////////////////////
+        /// qpc: add for debug
+        //Eigen::Matrix3d yaw_R;
+        //yaw_R<< cosImuYawStart,-sinImuYawStart,0,
+        //        sinImuYawStart,cosImuYawStart,0,
+        //        0 , 0, 1;
+        //Eigen::Matrix3d pitch_R;
+        //pitch_R<< cosImuPitchStart,0,sinImuPitchStart,
+        //          0 , 1 , 0,
+        //         -sinImuPitchStart,0,cosImuPitchStart;
+        //Eigen::Matrix3d roll_R;
+        //roll_R<<1, 0 , 0,
+        //        0,cosImuRollStart,-sinImuRollStart,
+        //        0,sinImuRollStart,cosImuRollStart;
+        //// c_to_b: 从相机坐标系c系 到 载体坐标系b系的旋转变换
+        //Eigen::Matrix3d c_to_b ;
+        //c_to_b << 0 , 0, 1,
+        //         1 ,0 ,0 ,
+        //        0 ,1 ,0;
+        //// yaw_R*pitch_R*roll_R: 是从载体坐标系b系到对应导航坐标系n系的变换,即C_b^n
+        //// 所以 n系到b系的变换 C_n^b = [yaw_R*pitch_R*roll_R]^T = [roll_R]^T * [pitch_R]^T * [yaw_R]^T
+
+        //Eigen::Vector3d t(imuShiftFromStartX,imuShiftFromStartY,imuShiftFromStartZ);
+        //Eigen::Vector3d P(x6,y6,z6);
+        //P=c_to_b.transpose()*(yaw_R*pitch_R*roll_R)*c_to_b*(P-t);
+
+        //// 下面证明了上述操作与原作者代码是等价的
+        //std::cout<<"Offical "<<x9<<" "<<y9<<" "<<z9<<std::endl;
+        //std::cout<<"my cal "<<P.transpose()<<std::endl;
+        //////////////////////////////////////////////////////////////
+
+        // 把点从 当前帧扫描起始相机坐标系c系对应的导航坐标系n' 转换回 当前帧扫描结束时相机坐标系c系
 
         float x10 = cos(imuYawLast) * x9 - sin(imuYawLast) * z9;
         float y10 = y9;
@@ -2438,7 +2469,8 @@ public:
         int cornerPointsLessSharpNum = cornerPointsLessSharp->points.size();
         for (int i = 0; i < cornerPointsLessSharpNum; i++) {
             // TransformToEnd的作用是将k+1时刻的less特征点转移至k+1时刻的sweep的结束位置处的相机坐标系下
-            // cornerPointsLessSharp: 投影到当前帧扫描起始坐标系(相机坐标系c系)的点
+            // [输入]cornerPointsLessSharp: 投影到当前帧扫描起始坐标系(相机坐标系c系)的点
+            // [输出]cornerPointsLessSharp: 转换到当前帧扫描结束时相机坐标系c系的点
             TransformToEnd(&cornerPointsLessSharp->points[i], &cornerPointsLessSharp->points[i]);
         }
 
