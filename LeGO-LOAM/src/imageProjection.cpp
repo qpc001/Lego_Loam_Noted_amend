@@ -319,16 +319,20 @@ public:
             }
         }
 
+        int ground_point_count=0;
 		// 如果有节点订阅groundCloud，那么就需要把地面点发布出来
 		// 具体实现过程：把点放到groundCloud队列中去
         if (pubGroundCloud.getNumSubscribers() != 0){
             for (size_t i = 0; i <= groundScanInd; ++i){
                 for (size_t j = 0; j < Horizon_SCAN; ++j){
-                    if (groundMat.at<int8_t>(i,j) == 1)
+                    if (groundMat.at<int8_t>(i,j) == 1){
+                        ground_point_count++;
                         groundCloud->push_back(fullCloud->points[j + i*Horizon_SCAN]);
+                    }
                 }
             }
         }
+        std::cout<<"提取地面点数:"<<ground_point_count<<std::endl;
     }
 
     void cloudSegmentation(){
@@ -389,6 +393,8 @@ public:
             // 以该线束最后一个点的索引-5作为结束
             segMsg.endRingIndex[i] = sizeOfSegCloud-1 - 5;
         }
+
+        printf("当前帧提取的点数: %d\n",segmentedCloud->size());
 
 		// 如果有节点订阅SegmentedCloudPure,
 		// 那么把点云数据保存到segmentedCloudPure中去
